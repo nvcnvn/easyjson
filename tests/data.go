@@ -7,6 +7,7 @@ import (
 
 	"github.com/mailru/easyjson"
 	"github.com/mailru/easyjson/opt"
+	"github.com/mailru/easyjson/tests/subpackage"
 )
 
 type PrimitiveTypes struct {
@@ -246,6 +247,8 @@ type Structs struct {
 	AnonymousSlice    []struct{ V int }
 	AnonymousPtrSlice []*struct{ V int }
 
+	FromSubpackage subpackage.DummySubpackageType
+
 	unexported bool
 }
 
@@ -282,6 +285,10 @@ var structsValue = Structs{
 
 	AnonymousSlice:    []struct{ V int }{{1}, {2}},
 	AnonymousPtrSlice: []*struct{ V int }{{3}, {4}},
+
+	FromSubpackage: subpackage.DummySubpackageType{
+		DummyField: 42,
+	},
 }
 
 var structsString = "{" +
@@ -305,6 +312,8 @@ var structsString = "{" +
 
 	`"AnonymousSlice":[{"V":1},{"V":2}],` +
 	`"AnonymousPtrSlice":[{"V":3},{"V":4}],` +
+
+	`"FromSubpackage":{"DummyField":42},` +
 
 	// Embedded fields go last.
 	`"V":"subp",` +
