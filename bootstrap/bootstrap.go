@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"golang.org/x/tools/imports"
 )
 
 const genPackage = "github.com/mailru/easyjson/gen"
@@ -167,6 +169,15 @@ func (g *Generator) Run() error {
 		cmd.Stdout = os.Stdout
 
 		if err = cmd.Run(); err != nil {
+			return err
+		}
+
+		if _, err := imports.Process(f.Name(), nil, &imports.Options{
+			TabWidth:  8,
+			TabIndent: true,
+			Comments:  true,
+			Fragment:  true,
+		}); err != nil {
 			return err
 		}
 	}
