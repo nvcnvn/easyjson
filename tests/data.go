@@ -443,26 +443,24 @@ type DeepNest struct {
 
 var deepNestValue = DeepNest{
 	SliceMap: map[Str][]Str{
-		"testSliceMap1": []Str{
+		"testSliceMap": []Str{
 			"0",
 			"1",
 		},
-		"testSliceMap2": nil,
 	},
 	MapSlice: []map[Str]Str{
 		map[Str]Str{
-			"testMapSlice1": "someValue",
+			"testMapSlice": "someValue",
 		},
 	},
 }
 
 var deepNestString = `{` +
 	`"SliceMap":{` +
-	`"testSliceMap1":["0","1"],` +
-	`"testSliceMap2":[]` +
+	`"testSliceMap":["0","1"],` +
 	`},` +
 	`"MapSlice":[` +
-	`{"testMapSlice1":"someValue"}` +
+	`{"testMapSlice":"someValue"}` +
 	`]` +
 	`}`
 
