@@ -2,16 +2,30 @@
 package jwriter
 
 import (
+	"encoding/base64"
 	"io"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/mailru/easyjson/buffer"
 )
 
+// Flags describe various encoding options. The behavior may be actually implemented in the encoder, but
+// Flags field in Writer is used to set and pass them around.
+type Flags int
+
+const (
+	NilMapAsEmpty   Flags = 1 << iota // Encode nil map as '{}' rather than 'null'.
+	NilSliceAsEmpty                   // Encode nil slice as '[]' rather than 'null'.
+)
+
 // Writer is a JSON writer.
 type Writer struct {
-	Error  error
-	Buffer buffer.Buffer
+	Flags Flags
+
+	Error        error
+	Buffer       buffer.Buffer
+	NoEscapeHTML bool
 }
 
 // Size returns the size of the data that was written out.
@@ -56,6 +70,19 @@ func (w *Writer) Raw(data []byte, err error) {
 	default:
 		w.RawString("null")
 	}
+}
+
+// Base64Bytes appends data to the buffer after base64 encoding it
+func (w *Writer) Base64Bytes(data []byte) {
+	if data == nil {
+		w.Buffer.AppendString("null")
+		return
+	}
+	w.Buffer.AppendByte('"')
+	dst := make([]byte, base64.StdEncoding.EncodedLen(len(data)))
+	base64.StdEncoding.Encode(dst, data)
+	w.Buffer.AppendBytes(dst)
+	w.Buffer.AppendByte('"')
 }
 
 func (w *Writer) Uint8(n uint8) {
@@ -197,9 +224,16 @@ func (w *Writer) Bool(v bool) {
 	}
 }
 
-func hex(c byte) byte {
-	const chars = "0123456789abcdef"
-	return chars[c&0xf]
+const chars = "0123456789abcdef"
+
+func isNotEscapedSingleChar(c byte, escapeHTML bool) bool {
+	// Note: might make sense to use a table if there are more chars to escape. With 4 chars
+	// it benchmarks the same.
+	if escapeHTML {
+		return c != '<' && c != '>' && c != '&' && c != '\\' && c != '"' && c >= 0x20 && c < utf8.RuneSelf
+	} else {
+		return c != '\\' && c != '"' && c >= 0x20 && c < utf8.RuneSelf
+	}
 }
 
 func (w *Writer) String(s string) {
@@ -210,37 +244,58 @@ func (w *Writer) String(s string) {
 
 	p := 0 // last non-escape symbol
 
-	for i := 0; i < len(s); i++ {
+	for i := 0; i < len(s); {
 		c := s[i]
-		var escape byte
-		switch c {
-		case '\t':
-			escape = 't'
-		case '\r':
-			escape = 'r'
-		case '\n':
-			escape = 'n'
-		case '\\':
-			escape = '\\'
-		case '"':
-			escape = '"'
-		default:
-			if c >= 0x20 {
-				// no escaping is required
-				continue
+
+		if isNotEscapedSingleChar(c, !w.NoEscapeHTML) {
+			// single-width character, no escaping is required
+			i++
+			continue
+		} else if c < utf8.RuneSelf {
+			// single-with character, need to escape
+			w.Buffer.AppendString(s[p:i])
+			switch c {
+			case '\t':
+				w.Buffer.AppendString(`\t`)
+			case '\r':
+				w.Buffer.AppendString(`\r`)
+			case '\n':
+				w.Buffer.AppendString(`\n`)
+			case '\\':
+				w.Buffer.AppendString(`\\`)
+			case '"':
+				w.Buffer.AppendString(`\"`)
+			default:
+				w.Buffer.AppendString(`\u00`)
+				w.Buffer.AppendByte(chars[c>>4])
+				w.Buffer.AppendByte(chars[c&0xf])
 			}
+
+			i++
+			p = i
+			continue
 		}
-		if escape != 0 {
+
+		// broken utf
+		runeValue, runeWidth := utf8.DecodeRuneInString(s[i:])
+		if runeValue == utf8.RuneError && runeWidth == 1 {
 			w.Buffer.AppendString(s[p:i])
-			w.Buffer.AppendByte('\\')
-			w.Buffer.AppendByte(escape)
-		} else {
-			w.Buffer.AppendString(s[p:i])
-			w.Buffer.AppendString(`\u00`)
-			w.Buffer.AppendByte(hex(c >> 4))
-			w.Buffer.AppendByte(hex(c))
+			w.Buffer.AppendString(`\ufffd`)
+			i++
+			p = i
+			continue
 		}
-		p = i + 1
+
+		// jsonp stuff - tab separator and line separator
+		if runeValue == '\u2028' || runeValue == '\u2029' {
+			w.Buffer.AppendString(s[p:i])
+			w.Buffer.AppendString(`\u202`)
+			w.Buffer.AppendByte(chars[runeValue&0xf])
+			i += runeWidth
+			p = i
+			continue
+		}
+		i += runeWidth
 	}
 	w.Buffer.AppendString(s[p:])
 	w.Buffer.AppendByte('"')

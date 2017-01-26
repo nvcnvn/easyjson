@@ -8,12 +8,14 @@ import (
 	"path"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
 
 const pkgWriter = "github.com/mailru/easyjson/jwriter"
 const pkgLexer = "github.com/mailru/easyjson/jlexer"
+const pkgEasyJSON = "github.com/mailru/easyjson"
 
 // FieldNamer defines a policy for generating names for struct fields.
 type FieldNamer interface {
@@ -27,13 +29,13 @@ type Generator struct {
 	pkgName    string
 	pkgPath    string
 	buildTags  string
-	funcPrefix string
+	hashString string
 
 	varCounter int
 
 	noStdMarshalers bool
 	omitEmpty       bool
-	namer           FieldNamer
+	fieldNamer      FieldNamer
 
 	// package path to local alias map for tracking imports
 	imports map[string]string
@@ -58,9 +60,10 @@ func NewGenerator(filename string) *Generator {
 		imports: map[string]string{
 			pkgWriter:       "jwriter",
 			pkgLexer:        "jlexer",
+			pkgEasyJSON:     "easyjson",
 			"encoding/json": "json",
 		},
-		namer:         DefaultFieldNamer{},
+		fieldNamer:    DefaultFieldNamer{},
 		marshallers:   make(map[reflect.Type]bool),
 		typesSeen:     make(map[reflect.Type]bool),
 		functionNames: make(map[string]reflect.Type),
@@ -70,7 +73,7 @@ func NewGenerator(filename string) *Generator {
 	// name clashes.
 	hash := fnv.New32()
 	hash.Write([]byte(filename))
-	ret.funcPrefix = fmt.Sprintf("easyjson_%x_", hash.Sum32())
+	ret.hashString = fmt.Sprintf("%x", hash.Sum32())
 
 	return ret
 }
@@ -88,12 +91,12 @@ func (g *Generator) SetBuildTags(tags string) {
 
 // SetFieldNamer sets field naming strategy.
 func (g *Generator) SetFieldNamer(n FieldNamer) {
-	g.namer = n
+	g.fieldNamer = n
 }
 
 // UseSnakeCase sets snake_case field naming strategy.
 func (g *Generator) UseSnakeCase() {
-	g.namer = SnakeCaseFieldNamer{}
+	g.fieldNamer = SnakeCaseFieldNamer{}
 }
 
 // NoStdMarshalers instructs not to generate standard MarshalJSON/UnmarshalJSON
@@ -156,7 +159,13 @@ func (g *Generator) printHeader() {
 
 	fmt.Println(")")
 	fmt.Println("")
-	fmt.Println("var _ = json.RawMessage{} // suppress unused package warning")
+	fmt.Println("// suppress unused package warning")
+	fmt.Println("var (")
+	fmt.Println("   _ *json.RawMessage")
+	fmt.Println("   _ *jlexer.Lexer")
+	fmt.Println("   _ *jwriter.Writer")
+	fmt.Println("   _ easyjson.Marshaler")
+	fmt.Println(")")
 
 	fmt.Println()
 }
@@ -170,10 +179,10 @@ func (g *Generator) Run(out io.Writer) error {
 		g.typesUnseen = g.typesUnseen[:len(g.typesUnseen)-1]
 		g.typesSeen[t] = true
 
-		if err := g.genStructDecoder(t); err != nil {
+		if err := g.genDecoder(t); err != nil {
 			return err
 		}
-		if err := g.genStructEncoder(t); err != nil {
+		if err := g.genEncoder(t); err != nil {
 			return err
 		}
 
@@ -193,8 +202,18 @@ func (g *Generator) Run(out io.Writer) error {
 	return err
 }
 
+// fixes vendored paths
+func fixPkgPathVendoring(pkgPath string) string {
+	const vendor = "/vendor/"
+	if i := strings.LastIndex(pkgPath, vendor); i != -1 {
+		return pkgPath[i+len(vendor):]
+	}
+	return pkgPath
+}
+
 // pkgAlias creates and returns and import alias for a given package.
 func (g *Generator) pkgAlias(pkgPath string) string {
+	pkgPath = fixPkgPathVendoring(pkgPath)
 	if alias := g.imports[pkgPath]; alias != "" {
 		return alias
 	}
@@ -222,8 +241,17 @@ func (g *Generator) pkgAlias(pkgPath string) string {
 
 // getType return the textual type name of given type that can be used in generated code.
 func (g *Generator) getType(t reflect.Type) string {
-	if t.Kind() == reflect.Ptr {
-		return "*" + g.getType(t.Elem())
+	if t.Name() == "" {
+		switch t.Kind() {
+		case reflect.Ptr:
+			return "*" + g.getType(t.Elem())
+		case reflect.Slice:
+			return "[]" + g.getType(t.Elem())
+		case reflect.Array:
+			return "[" + strconv.Itoa(t.Len()) + "]" + g.getType(t.Elem())
+		case reflect.Map:
+			return "map[" + g.getType(t.Key()) + "]" + g.getType(t.Elem())
+		}
 	}
 
 	if t.Name() == "" || t.PkgPath() == "" {
@@ -243,7 +271,7 @@ func (g *Generator) uniqueVarName() string {
 
 // safeName escapes unsafe characters in pkg/type name and returns a string that can be used
 // in encoder/decoder names for the type.
-func safeName(t reflect.Type) string {
+func (g *Generator) safeName(t reflect.Type) string {
 	name := t.PkgPath()
 	if t.Name() == "" {
 		name += "anonymous"
@@ -251,15 +279,17 @@ func safeName(t reflect.Type) string {
 		name += "." + t.Name()
 	}
 
-	var ret []rune
+	parts := []string{}
+	part := []rune{}
 	for _, c := range name {
 		if unicode.IsLetter(c) || unicode.IsDigit(c) {
-			ret = append(ret, c)
-		} else {
-			ret = append(ret, '_')
+			part = append(part, c)
+		} else if len(part) > 0 {
+			parts = append(parts, string(part))
+			part = []rune{}
 		}
 	}
-	return string(ret)
+	return joinFunctionNameParts(false, parts...)
 }
 
 // functionName returns a function name for a given type with a given prefix. If a function
@@ -267,8 +297,8 @@ func safeName(t reflect.Type) string {
 //
 // Method is used to track encoder/decoder names for the type.
 func (g *Generator) functionName(prefix string, t reflect.Type) string {
-	prefix = g.funcPrefix + prefix
-	name := prefix + safeName(t)
+	prefix = joinFunctionNameParts(true, "easyjson", g.hashString, prefix)
+	name := joinFunctionNameParts(true, prefix, g.safeName(t))
 
 	// Most of the names will be unique, try a shortcut first.
 	if e, ok := g.functionNames[name]; !ok || e == t {
@@ -361,4 +391,21 @@ func (SnakeCaseFieldNamer) GetJSONFieldName(t reflect.Type, f reflect.StructFiel
 	}
 
 	return camelToSnake(f.Name)
+}
+
+func joinFunctionNameParts(keepFirst bool, parts ...string) string {
+	buf := bytes.NewBufferString("")
+	for i, part := range parts {
+		if i == 0 && keepFirst {
+			buf.WriteString(part)
+		} else {
+			if len(part) > 0 {
+				buf.WriteString(strings.ToUpper(string(part[0])))
+			}
+			if len(part) > 1 {
+				buf.WriteString(part[1:])
+			}
+		}
+	}
+	return buf.String()
 }

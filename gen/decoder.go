@@ -13,8 +13,8 @@ import (
 // Target this byte size for initial slice allocation to reduce garbage collection.
 const minSliceBytes = 64
 
-func (g *Generator) getStructDecoderName(t reflect.Type) string {
-	return g.functionName("decode_", t)
+func (g *Generator) getDecoderName(t reflect.Type) string {
+	return g.functionName("decode", t)
 }
 
 var primitiveDecoders = map[reflect.Kind]string{
@@ -47,7 +47,7 @@ var primitiveStringDecoders = map[reflect.Kind]string{
 	reflect.Uint64: "in.Uint64Str()",
 }
 
-// genTypeDecoder generates decoding code for the type t.
+// genTypeDecoder generates decoding code for the type t, but uses unmarshaler interface if implemented by t.
 func (g *Generator) genTypeDecoder(t reflect.Type, out string, tags fieldTags, indent int) error {
 	ws := strings.Repeat("  ", indent)
 
@@ -65,6 +65,13 @@ func (g *Generator) genTypeDecoder(t reflect.Type, out string, tags fieldTags, i
 		return nil
 	}
 
+	err := g.genTypeDecoderNoCheck(t, out, tags, indent)
+	return err
+}
+
+// genTypeDecoderNoCheck generates decoding code for the type t.
+func (g *Generator) genTypeDecoderNoCheck(t reflect.Type, out string, tags fieldTags, indent int) error {
+	ws := strings.Repeat("  ", indent)
 	// Check whether type is primitive, needs to be done after interface check.
 	if dec := primitiveStringDecoders[t.Kind()]; dec != "" && tags.asString {
 		fmt.Fprintln(g.out, ws+out+" = "+g.getType(t)+"("+dec+")")
@@ -79,29 +86,80 @@ func (g *Generator) genTypeDecoder(t reflect.Type, out string, tags fieldTags, i
 		tmpVar := g.uniqueVarName()
 		elem := t.Elem()
 
-		capacity := minSliceBytes / elem.Size()
-		if capacity == 0 {
-			capacity = 1
+		if elem.Kind() == reflect.Uint8 {
+			fmt.Fprintln(g.out, ws+"if in.IsNull() {")
+			fmt.Fprintln(g.out, ws+"  in.Skip()")
+			fmt.Fprintln(g.out, ws+"  "+out+" = nil")
+			fmt.Fprintln(g.out, ws+"} else {")
+			fmt.Fprintln(g.out, ws+"  "+out+" = in.Bytes()")
+			fmt.Fprintln(g.out, ws+"}")
+
+		} else {
+
+			capacity := minSliceBytes / elem.Size()
+			if capacity == 0 {
+				capacity = 1
+			}
+
+			fmt.Fprintln(g.out, ws+"if in.IsNull() {")
+			fmt.Fprintln(g.out, ws+"  in.Skip()")
+			fmt.Fprintln(g.out, ws+"  "+out+" = nil")
+			fmt.Fprintln(g.out, ws+"} else {")
+			fmt.Fprintln(g.out, ws+"  in.Delim('[')")
+			fmt.Fprintln(g.out, ws+"  if !in.IsDelim(']') {")
+			fmt.Fprintln(g.out, ws+"    "+out+" = make("+g.getType(t)+", 0, "+fmt.Sprint(capacity)+")")
+			fmt.Fprintln(g.out, ws+"  } else {")
+			fmt.Fprintln(g.out, ws+"    "+out+" = "+g.getType(t)+"{}")
+			fmt.Fprintln(g.out, ws+"  }")
+			fmt.Fprintln(g.out, ws+"  for !in.IsDelim(']') {")
+			fmt.Fprintln(g.out, ws+"    var "+tmpVar+" "+g.getType(elem))
+
+			g.genTypeDecoder(elem, tmpVar, tags, indent+2)
+
+			fmt.Fprintln(g.out, ws+"    "+out+" = append("+out+", "+tmpVar+")")
+			fmt.Fprintln(g.out, ws+"    in.WantComma()")
+			fmt.Fprintln(g.out, ws+"  }")
+			fmt.Fprintln(g.out, ws+"  in.Delim(']')")
+			fmt.Fprintln(g.out, ws+"}")
 		}
 
-		fmt.Fprintln(g.out, ws+"in.Delim('[')")
-		fmt.Fprintln(g.out, ws+"if !in.IsDelim(']') {")
-		fmt.Fprintln(g.out, ws+"  "+out+" = make([]"+g.getType(elem)+", 0, "+fmt.Sprint(capacity)+")")
-		fmt.Fprintln(g.out, ws+"} else {")
-		fmt.Fprintln(g.out, ws+"  "+out+" = nil")
-		fmt.Fprintln(g.out, ws+"}")
-		fmt.Fprintln(g.out, ws+"for !in.IsDelim(']') {")
-		fmt.Fprintln(g.out, ws+"  var "+tmpVar+" "+g.getType(elem))
+	case reflect.Array:
+		iterVar := g.uniqueVarName()
+		elem := t.Elem()
 
-		g.genTypeDecoder(elem, tmpVar, tags, indent+1)
+		if elem.Kind() == reflect.Uint8 {
+			fmt.Fprintln(g.out, ws+"if in.IsNull() {")
+			fmt.Fprintln(g.out, ws+"  in.Skip()")
+			fmt.Fprintln(g.out, ws+"} else {")
+			fmt.Fprintln(g.out, ws+"  copy("+out+"[:], in.Bytes())")
+			fmt.Fprintln(g.out, ws+"}")
 
-		fmt.Fprintln(g.out, ws+"  "+out+" = append("+out+", "+tmpVar+")")
-		fmt.Fprintln(g.out, ws+"  in.WantComma()")
-		fmt.Fprintln(g.out, ws+"}")
-		fmt.Fprintln(g.out, ws+"in.Delim(']')")
+		} else {
+
+			length := t.Len()
+
+			fmt.Fprintln(g.out, ws+"if in.IsNull() {")
+			fmt.Fprintln(g.out, ws+"  in.Skip()")
+			fmt.Fprintln(g.out, ws+"} else {")
+			fmt.Fprintln(g.out, ws+"  in.Delim('[')")
+			fmt.Fprintln(g.out, ws+"  "+iterVar+" := 0")
+			fmt.Fprintln(g.out, ws+"  for !in.IsDelim(']') {")
+			fmt.Fprintln(g.out, ws+"    if "+iterVar+" < "+fmt.Sprint(length)+" {")
+
+			g.genTypeDecoder(elem, out+"["+iterVar+"]", tags, indent+3)
+
+			fmt.Fprintln(g.out, ws+"      "+iterVar+"++")
+			fmt.Fprintln(g.out, ws+"    } else {")
+			fmt.Fprintln(g.out, ws+"      in.SkipRecursive()")
+			fmt.Fprintln(g.out, ws+"    }")
+			fmt.Fprintln(g.out, ws+"    in.WantComma()")
+			fmt.Fprintln(g.out, ws+"  }")
+			fmt.Fprintln(g.out, ws+"  in.Delim(']')")
+			fmt.Fprintln(g.out, ws+"}")
+		}
 
 	case reflect.Struct:
-		dec := g.getStructDecoderName(t)
+		dec := g.getDecoderName(t)
 		g.addType(t)
 
 		fmt.Fprintln(g.out, ws+dec+"(in, &"+out+")")
@@ -111,7 +169,9 @@ func (g *Generator) genTypeDecoder(t reflect.Type, out string, tags fieldTags, i
 		fmt.Fprintln(g.out, ws+"  in.Skip()")
 		fmt.Fprintln(g.out, ws+"  "+out+" = nil")
 		fmt.Fprintln(g.out, ws+"} else {")
-		fmt.Fprintln(g.out, ws+"  "+out+" = new("+g.getType(t.Elem())+")")
+		fmt.Fprintln(g.out, ws+"  if "+out+" == nil {")
+		fmt.Fprintln(g.out, ws+"    "+out+" = new("+g.getType(t.Elem())+")")
+		fmt.Fprintln(g.out, ws+"  }")
 
 		g.genTypeDecoder(t.Elem(), "*"+out, tags, indent+1)
 
@@ -130,7 +190,7 @@ func (g *Generator) genTypeDecoder(t reflect.Type, out string, tags fieldTags, i
 		fmt.Fprintln(g.out, ws+"} else {")
 		fmt.Fprintln(g.out, ws+"  in.Delim('{')")
 		fmt.Fprintln(g.out, ws+"  if !in.IsDelim('}') {")
-		fmt.Fprintln(g.out, ws+"  "+out+" = make(map["+g.getType(t.Key())+"]"+g.getType(t.Elem())+")")
+		fmt.Fprintln(g.out, ws+"  "+out+" = make("+g.getType(t)+")")
 		fmt.Fprintln(g.out, ws+"  } else {")
 		fmt.Fprintln(g.out, ws+"  "+out+" = nil")
 		fmt.Fprintln(g.out, ws+"  }")
@@ -152,8 +212,13 @@ func (g *Generator) genTypeDecoder(t reflect.Type, out string, tags fieldTags, i
 		if t.NumMethod() != 0 {
 			return fmt.Errorf("interface type %v not supported: only interface{} is allowed", t)
 		}
-		fmt.Fprintln(g.out, ws+out+" = in.Interface()")
-
+		fmt.Fprintln(g.out, ws+"if m, ok := "+out+".(easyjson.Unmarshaler); ok {")
+		fmt.Fprintln(g.out, ws+"m.UnmarshalEasyJSON(in)")
+		fmt.Fprintln(g.out, ws+"} else if m, ok := "+out+".(json.Unmarshaler); ok {")
+		fmt.Fprintln(g.out, ws+"m.UnmarshalJSON(in.Raw())")
+		fmt.Fprintln(g.out, ws+"} else {")
+		fmt.Fprintln(g.out, ws+"  "+out+" = in.Interface()")
+		fmt.Fprintln(g.out, ws+"}")
 	default:
 		return fmt.Errorf("don't know how to decode %v", t)
 	}
@@ -162,11 +227,48 @@ func (g *Generator) genTypeDecoder(t reflect.Type, out string, tags fieldTags, i
 }
 
 func (g *Generator) genStructFieldDecoder(t reflect.Type, f reflect.StructField) error {
-	jsonName := g.namer.GetJSONFieldName(t, f)
+	jsonName := g.fieldNamer.GetJSONFieldName(t, f)
 	tags := parseFieldTags(f)
 
+	if tags.omit {
+		return nil
+	}
+
 	fmt.Fprintf(g.out, "    case %q:\n", jsonName)
-	return g.genTypeDecoder(f.Type, "out."+f.Name, tags, 3)
+	if err := g.genTypeDecoder(f.Type, "out."+f.Name, tags, 3); err != nil {
+		return err
+	}
+
+	if tags.required {
+		fmt.Fprintf(g.out, "%sSet = true\n", f.Name)
+	}
+
+	return nil
+}
+
+func (g *Generator) genRequiredFieldSet(t reflect.Type, f reflect.StructField) {
+	tags := parseFieldTags(f)
+
+	if !tags.required {
+		return
+	}
+
+	fmt.Fprintf(g.out, "var %sSet bool\n", f.Name)
+}
+
+func (g *Generator) genRequiredFieldCheck(t reflect.Type, f reflect.StructField) {
+	jsonName := g.fieldNamer.GetJSONFieldName(t, f)
+	tags := parseFieldTags(f)
+
+	if !tags.required {
+		return
+	}
+
+	g.imports["fmt"] = "fmt"
+
+	fmt.Fprintf(g.out, "if !%sSet {\n", f.Name)
+	fmt.Fprintf(g.out, "    in.AddError(fmt.Errorf(\"key '%s' is required\"))\n", jsonName)
+	fmt.Fprintf(g.out, "}\n")
 }
 
 func mergeStructFields(fields1, fields2 []reflect.StructField) (fields []reflect.StructField) {
@@ -223,16 +325,53 @@ func getStructFields(t reflect.Type) ([]reflect.StructField, error) {
 	return mergeStructFields(efields, fields), nil
 }
 
+func (g *Generator) genDecoder(t reflect.Type) error {
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return g.genSliceArrayDecoder(t)
+	default:
+		return g.genStructDecoder(t)
+	}
+}
+
+func (g *Generator) genSliceArrayDecoder(t reflect.Type) error {
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+	default:
+		return fmt.Errorf("cannot generate encoder/decoder for %v, not a slice/array/map type", t)
+	}
+
+	fname := g.getDecoderName(t)
+	typ := g.getType(t)
+
+	fmt.Fprintln(g.out, "func "+fname+"(in *jlexer.Lexer, out *"+typ+") {")
+	fmt.Fprintln(g.out, " isTopLevel := in.IsStart()")
+	err := g.genTypeDecoderNoCheck(t, "*out", fieldTags{}, 1)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(g.out, "  if isTopLevel {")
+	fmt.Fprintln(g.out, "    in.Consumed()")
+	fmt.Fprintln(g.out, "  }")
+	fmt.Fprintln(g.out, "}")
+
+	return nil
+}
+
 func (g *Generator) genStructDecoder(t reflect.Type) error {
 	if t.Kind() != reflect.Struct {
 		return fmt.Errorf("cannot generate encoder/decoder for %v, not a struct type", t)
 	}
 
-	fname := g.getStructDecoderName(t)
+	fname := g.getDecoderName(t)
 	typ := g.getType(t)
 
 	fmt.Fprintln(g.out, "func "+fname+"(in *jlexer.Lexer, out *"+typ+") {")
+	fmt.Fprintln(g.out, "  isTopLevel := in.IsStart()")
 	fmt.Fprintln(g.out, "  if in.IsNull() {")
+	fmt.Fprintln(g.out, "    if isTopLevel {")
+	fmt.Fprintln(g.out, "      in.Consumed()")
+	fmt.Fprintln(g.out, "    }")
 	fmt.Fprintln(g.out, "    in.Skip()")
 	fmt.Fprintln(g.out, "    return")
 	fmt.Fprintln(g.out, "  }")
@@ -246,6 +385,15 @@ func (g *Generator) genStructDecoder(t reflect.Type) error {
 		fmt.Fprintln(g.out, "  out."+f.Name+" = new("+g.getType(f.Type.Elem())+")")
 	}
 
+	fs, err := getStructFields(t)
+	if err != nil {
+		return fmt.Errorf("cannot generate decoder for %v: %v", t, err)
+	}
+
+	for _, f := range fs {
+		g.genRequiredFieldSet(t, f)
+	}
+
 	fmt.Fprintln(g.out, "  in.Delim('{')")
 	fmt.Fprintln(g.out, "  for !in.IsDelim('}') {")
 	fmt.Fprintln(g.out, "    key := in.UnsafeString()")
@@ -255,13 +403,8 @@ func (g *Generator) genStructDecoder(t reflect.Type) error {
 	fmt.Fprintln(g.out, "       in.WantComma()")
 	fmt.Fprintln(g.out, "       continue")
 	fmt.Fprintln(g.out, "    }")
+
 	fmt.Fprintln(g.out, "    switch key {")
-
-	fs, err := getStructFields(t)
-	if err != nil {
-		return fmt.Errorf("cannot generate decoder for %v: %v", t, err)
-	}
-
 	for _, f := range fs {
 		if err := g.genStructFieldDecoder(t, f); err != nil {
 			return err
@@ -274,20 +417,31 @@ func (g *Generator) genStructDecoder(t reflect.Type) error {
 	fmt.Fprintln(g.out, "    in.WantComma()")
 	fmt.Fprintln(g.out, "  }")
 	fmt.Fprintln(g.out, "  in.Delim('}')")
+	fmt.Fprintln(g.out, "  if isTopLevel {")
+	fmt.Fprintln(g.out, "    in.Consumed()")
+	fmt.Fprintln(g.out, "  }")
+
+	for _, f := range fs {
+		g.genRequiredFieldCheck(t, f)
+	}
+
 	fmt.Fprintln(g.out, "}")
 
 	return nil
 }
 
 func (g *Generator) genStructUnmarshaller(t reflect.Type) error {
-	if t.Kind() != reflect.Struct {
-		return fmt.Errorf("cannot generate encoder/decoder for %v, not a struct type", t)
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map, reflect.Struct:
+	default:
+		return fmt.Errorf("cannot generate encoder/decoder for %v, not a struct/slice/array/map type", t)
 	}
 
-	fname := g.getStructDecoderName(t)
+	fname := g.getDecoderName(t)
 	typ := g.getType(t)
 
 	if !g.noStdMarshalers {
+		fmt.Fprintln(g.out, "// UnmarshalJSON supports json.Unmarshaler interface")
 		fmt.Fprintln(g.out, "func (v *"+typ+") UnmarshalJSON(data []byte) error {")
 		fmt.Fprintln(g.out, "  r := jlexer.Lexer{Data: data}")
 		fmt.Fprintln(g.out, "  "+fname+"(&r, v)")
@@ -295,6 +449,7 @@ func (g *Generator) genStructUnmarshaller(t reflect.Type) error {
 		fmt.Fprintln(g.out, "}")
 	}
 
+	fmt.Fprintln(g.out, "// UnmarshalEasyJSON supports easyjson.Unmarshaler interface")
 	fmt.Fprintln(g.out, "func (v *"+typ+") UnmarshalEasyJSON(l *jlexer.Lexer) {")
 	fmt.Fprintln(g.out, "  "+fname+"(l, v)")
 	fmt.Fprintln(g.out, "}")

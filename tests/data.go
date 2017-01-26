@@ -246,6 +246,8 @@ type Structs struct {
 	AnonymousSlice    []struct{ V int }
 	AnonymousPtrSlice []*struct{ V int }
 
+	Slice []string
+
 	unexported bool
 }
 
@@ -282,6 +284,8 @@ var structsValue = Structs{
 
 	AnonymousSlice:    []struct{ V int }{{1}, {2}},
 	AnonymousPtrSlice: []*struct{ V int }{{3}, {4}},
+
+	Slice: []string{"test5", "test6"},
 }
 
 var structsString = "{" +
@@ -292,10 +296,10 @@ var structsString = "{" +
 	`"SubNil":null,` +
 
 	`"SubSlice":[{"Value":"s1","Value2":""},{"Value":"s2","Value2":""}],` +
-	`"SubSliceNil":[],` +
+	`"SubSliceNil":null,` +
 
 	`"SubPtrSlice":[{"Value":"p1","Value2":""},{"Value":"p2","Value2":""}],` +
-	`"SubPtrSliceNil":[],` +
+	`"SubPtrSliceNil":null,` +
 
 	`"SubA1":{"Value":"test3","Value2":"v3"},` +
 	`"SubA2":{"Value":"test4","Value2":"v4"},` +
@@ -305,6 +309,8 @@ var structsString = "{" +
 
 	`"AnonymousSlice":[{"V":1},{"V":2}],` +
 	`"AnonymousPtrSlice":[{"V":3},{"V":4}],` +
+
+	`"Slice":["test5","test6"],` +
 
 	// Embedded fields go last.
 	`"V":"subp",` +
@@ -400,15 +406,84 @@ var unexportedStructValue = unexportedStruct{"test"}
 var unexportedStructString = `{"Value":"test"}`
 
 type ExcludedField struct {
-	Process      bool `json:"process"`
-	DoNotProcess bool `json:"-"`
+	Process       bool `json:"process"`
+	DoNotProcess  bool `json:"-"`
+	DoNotProcess1 bool `json:"-"`
 }
 
 var excludedFieldValue = ExcludedField{
-	Process:      true,
-	DoNotProcess: false,
+	Process:       true,
+	DoNotProcess:  false,
+	DoNotProcess1: false,
 }
 var excludedFieldString = `{"process":true}`
+
+type Slices struct {
+	ByteSlice      []byte
+	EmptyByteSlice []byte
+	NilByteSlice   []byte
+	IntSlice       []int
+	EmptyIntSlice  []int
+	NilIntSlice    []int
+}
+
+var sliceValue = Slices{
+	ByteSlice:      []byte("abc"),
+	EmptyByteSlice: []byte{},
+	NilByteSlice:   []byte(nil),
+	IntSlice:       []int{1, 2, 3, 4, 5},
+	EmptyIntSlice:  []int{},
+	NilIntSlice:    []int(nil),
+}
+
+var sliceString = `{` +
+	`"ByteSlice":"YWJj",` +
+	`"EmptyByteSlice":"",` +
+	`"NilByteSlice":null,` +
+	`"IntSlice":[1,2,3,4,5],` +
+	`"EmptyIntSlice":[],` +
+	`"NilIntSlice":null` +
+	`}`
+
+type Arrays struct {
+	ByteArray      [3]byte
+	EmptyByteArray [0]byte
+	IntArray       [5]int
+	EmptyIntArray  [0]int
+}
+
+var arrayValue = Arrays{
+	ByteArray:      [3]byte{'a', 'b', 'c'},
+	EmptyByteArray: [0]byte{},
+	IntArray:       [5]int{1, 2, 3, 4, 5},
+	EmptyIntArray:  [0]int{},
+}
+
+var arrayString = `{` +
+	`"ByteArray":"YWJj",` +
+	`"EmptyByteArray":"",` +
+	`"IntArray":[1,2,3,4,5],` +
+	`"EmptyIntArray":[]` +
+	`}`
+
+var arrayOverflowString = `{` +
+	`"ByteArray":"YWJjbnNk",` +
+	`"EmptyByteArray":"YWJj",` +
+	`"IntArray":[1,2,3,4,5,6],` +
+	`"EmptyIntArray":[7,8]` +
+	`}`
+
+var arrayUnderflowValue = Arrays{
+	ByteArray:      [3]byte{'x', 0, 0},
+	EmptyByteArray: [0]byte{},
+	IntArray:       [5]int{1, 2, 0, 0, 0},
+	EmptyIntArray:  [0]int{},
+}
+
+var arrayUnderflowString = `{` +
+	`"ByteArray":"eA==",` +
+	`"IntArray":[1,2]` +
+	`}`
 
 type Str string
 
@@ -433,3 +508,143 @@ var mapsString = `{` +
 	`"NilMap":null,` +
 	`"CustomMap":{"c":"d"}` +
 	`}`
+
+type NamedSlice []Str
+type NamedMap map[Str]Str
+
+type DeepNest struct {
+	SliceMap         map[Str][]Str
+	SliceMap1        map[Str][]Str
+	SliceMap2        map[Str][]Str
+	NamedSliceMap    map[Str]NamedSlice
+	NamedMapMap      map[Str]NamedMap
+	MapSlice         []map[Str]Str
+	NamedSliceSlice  []NamedSlice
+	NamedMapSlice    []NamedMap
+	NamedStringSlice []NamedString
+}
+
+var deepNestValue = DeepNest{
+	SliceMap: map[Str][]Str{
+		"testSliceMap": []Str{
+			"0",
+			"1",
+		},
+	},
+	SliceMap1: map[Str][]Str{
+		"testSliceMap1": []Str(nil),
+	},
+	SliceMap2: map[Str][]Str{
+		"testSliceMap2": []Str{},
+	},
+	NamedSliceMap: map[Str]NamedSlice{
+		"testNamedSliceMap": NamedSlice{
+			"2",
+			"3",
+		},
+	},
+	NamedMapMap: map[Str]NamedMap{
+		"testNamedMapMap": NamedMap{
+			"key1": "value1",
+		},
+	},
+	MapSlice: []map[Str]Str{
+		map[Str]Str{
+			"testMapSlice": "someValue",
+		},
+	},
+	NamedSliceSlice: []NamedSlice{
+		NamedSlice{
+			"someValue1",
+			"someValue2",
+		},
+		NamedSlice{
+			"someValue3",
+			"someValue4",
+		},
+	},
+	NamedMapSlice: []NamedMap{
+		NamedMap{
+			"key2": "value2",
+		},
+		NamedMap{
+			"key3": "value3",
+		},
+	},
+	NamedStringSlice: []NamedString{
+		"value4", "value5",
+	},
+}
+
+var deepNestString = `{` +
+	`"SliceMap":{` +
+	`"testSliceMap":["0","1"]` +
+	`},` +
+	`"SliceMap1":{` +
+	`"testSliceMap1":null` +
+	`},` +
+	`"SliceMap2":{` +
+	`"testSliceMap2":[]` +
+	`},` +
+	`"NamedSliceMap":{` +
+	`"testNamedSliceMap":["2","3"]` +
+	`},` +
+	`"NamedMapMap":{` +
+	`"testNamedMapMap":{"key1":"value1"}` +
+	`},` +
+	`"MapSlice":[` +
+	`{"testMapSlice":"someValue"}` +
+	`],` +
+	`"NamedSliceSlice":[` +
+	`["someValue1","someValue2"],` +
+	`["someValue3","someValue4"]` +
+	`],` +
+	`"NamedMapSlice":[` +
+	`{"key2":"value2"},` +
+	`{"key3":"value3"}` +
+	`],` +
+	`"NamedStringSlice":["value4","value5"]` +
+	`}`
+
+//easyjson:json
+type Ints []int
+
+var IntsValue = Ints{1, 2, 3, 4, 5}
+
+var IntsString = `[1,2,3,4,5]`
+
+//easyjson:json
+type MapStringString map[string]string
+
+var mapStringStringValue = MapStringString{"a": "b"}
+
+var mapStringStringString = `{"a":"b"}`
+
+type RequiredOptionalStruct struct {
+	FirstName string `json:"first_name,required"`
+	Lastname  string `json:"last_name"`
+}
+
+//easyjson:json
+type EncodingFlagsTestMap struct {
+	F map[string]string
+}
+
+//easyjson:json
+type EncodingFlagsTestSlice struct {
+	F []string
+}
+
+type StructWithInterface struct {
+	Field1 int         `json:"f1"`
+	Field2 interface{} `json:"f2"`
+	Field3 string      `json:"f3"`
+}
+
+type EmbeddedStruct struct {
+	Field1 int    `json:"f1"`
+	Field2 string `json:"f2"`
+}
+
+var structWithInterfaceString = `{"f1":1,"f2":{"f1":11,"f2":"22"},"f3":"3"}`
+var structWithInterfaceValueFilled = StructWithInterface{1, &EmbeddedStruct{11, "22"}, "3"}
